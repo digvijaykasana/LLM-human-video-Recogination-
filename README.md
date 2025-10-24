@@ -1,136 +1,204 @@
 # Project Overview
 
-this project is when you upload a video to the model in streamlit web UI it predict whats the person is doing in the video is it sitting, standing, reading or walkind etc 
+## Human Activity Recognition with CLIP (Streamlit + PyTorch)
 
-## What this repo includes
-- Streamlit app
-- ML/AI
-
-
----
-
-### Notable components
-- **Entry points detected**
-- codes and output/code pre/app.py
-- codes and output/code current/app.py
-
-
-
+A complete, project that **classifies human actions in short videos** using a fine‑tuned **CLIP ViT‑B/32** image encoder and a lightweight classification layer. this project is when you upload a video to the model in streamlit web UI it predict whats the person is doing in the video is it sitting, standing, reading or walkind etc.
+It includes:
+- a **training pipeline** to fine‑tune on your custom dataset, and
+- a **Streamlit app** to upload a video and get an instant action prediction.
 
 ---
 
-## Environment Setup
+## What this project does
 
-You’ll need Python 3.10+.
+- **Takes a video** (MP4/AVI), **extracts representative frames** with OpenCV.
+- **Encodes frames** using the CLIP image encoder (`openai/clip-vit-base-patch32`).
+- **Aggregates frame embeddings** to form a video‑level representation.
+- **Classifies** the resulting representation into one of the configured actions.
+- Provides a **web UI (Streamlit)** for easy demo and recruiter review.
 
-```bash
-# 1) Create a virtual environment
-python -m venv .venv
-# macOS/Linux
-source .venv/bin/activate
-# Windows (PowerShell)
-.venv\Scripts\Activate.ps1
+---
 
-# 2) Install dependencies
-pip install -r requirements.txt
+## Repo structure (actual)
 
-# 3) (Optional) If using Jupyter
-python -m ipykernel install --user --name=project-kernel
+```
+codes and output/
+├─ code current/
+│  ├─ app.py                # Streamlit inference app (current version)
+│  ├─ training.py           # End‑to‑end training/validation/testing pipeline
+│  ├─ logs.txt              # Training/eval logs (accuracy/loss etc.)
+│  └─ .ipynb_checkpoints/   # Auto‑generated checkpoints
+├─ code pre/
+│  ├─ app.py                # Earlier app version (same idea, older paths)
+│  └─ training.py           # Earlier training script
 ```
 
-If you run into platform‑specific build issues (e.g., `psycopg2`, `torch`), install the appropriate wheels for your OS/CPU/GPU.
+> You’ll run either `code current/app.py` (for the demo) or `code current/training.py` (to fine‑tune on your dataset).
 
 ---
 
-## Quickstart
+## Environment
 
-Choose what matches your use case.
-
-### A) Run a Streamlit app 
+- **Python 3.10+**
+- Install dependencies:
 ```bash
-streamlit run streamlit_app.py
-# or, if the entry is named differently:
+pip install -r requirements.txt
+```
+
+> Key libs: `torch`, `transformers`, `opencv-python`, `Pillow`, `numpy`, `streamlit`, `matplotlib`, `seaborn`, `scikit-learn`.
+
+---
+
+## Dataset layout
+
+Training expects a **folder per class** with **videos inside**:
+
+```
+HumanActivityRecognition-VideoDataset/
+├─ clapping/
+│  ├─ vid_001.mp4
+│  └─ ...
+├─ meeting_and_splitting/
+│  ├─ ms_001.mp4
+│  └─ ...
+├─ sitting/
+├─ walking_while_reading_a_book/
+└─ walking_while_using_phone/
+```
+
+Name the dataset folder exactly as passed in `training.py` (default: `HumanActivityRecognition-VideoDataset`).
+
+---
+
+## How the training pipeline works (`code current/training.py`)
+
+1. **VideoDataset**
+   - Walks the dataset directory (class‑subfolders).
+   - **Extracts frames** with `cv2.VideoCapture` (evenly spaced sampling per clip).
+   - Uses **`CLIPProcessor`** to preprocess each frame to the ViT‑B/32 input size.
+   - Stacks frames into a tensor shaped `[T, C, H, W]` and then batches to `[B, T, C, H, W]`.
+
+2. **Embedding & aggregation**
+   - Passes frames through **`CLIPModel.get_image_features`** to get `[B, T, D]` embeddings.
+   - **Temporal aggregation** (mean‑pool) reduces to `[B, D]` per video.
+
+3. **Classification head**
+   - A **linear classifier** maps `[B, D] → [B, num_classes]`.
+   - **Loss**: `CrossEntropyLoss`.
+   - **Optimizer**: `Adam(lr=1e-4)`.
+   - **Metrics**: per‑epoch train/val loss and **validation accuracy**.
+
+4. **Data split & loaders**
+   - Uses a stratified **train/val/test** split.
+   - `DataLoader` with batching and shuffling for training.
+
+5. **Validation & early model saving**
+   - Tracks the **best validation loss** and saves weights to `fine_tuned_clip_best.pth`.
+   - Final model snapshot is also saved to `fine_tuned_clip.pth`.
+
+6. **Evaluation**
+   - Runs on the **test set** and prints **Test Accuracy**.
+   - Generates a **confusion matrix** and **training curves** (loss/accuracy) with Matplotlib/Seaborn.
+   - Writes progress to `logs.txt` (e.g., `Epoch x/y`, `Training loss`, `Test Accuracy` lines).
+
+### Train it
+
+```bash
+cd "codes and output/code current"
+python training.py
+```
+- Make sure your dataset is at `../HumanActivityRecognition-VideoDataset` or update the path in `training.py`.
+- At the end, you’ll have `fine_tuned_clip.pth` and `fine_tuned_clip_best.pth` next to the script, plus plots and logs.
+
+---
+
+## How inference works (`code current/app.py`)
+
+1. **Model bootstrap**
+   - Loads `openai/clip-vit-base-patch32`.
+   - Loads the **fine‑tuned checkpoint** (`fine_tuned_clip.pth`) onto **CUDA if available** else CPU.
+   - Sets the model to `eval()`.
+
+2. **Video input**
+   - Streamlit file uploader accepts a **.mp4** (or other supported) video.
+   - Video is saved temporarily and previewed with `st.video(...)`.
+
+3. **Frame extraction + preprocessing**
+   - Extracts frames via OpenCV.
+   - Uses `CLIPProcessor` to convert frames to tensors.
+
+4. **Embedding + aggregation**
+   - Gets CLIP image features for each frame, **mean‑pools** across time.
+
+5. **Classification**
+   - Applies the fine‑tuned classifier to produce **class logits**.
+   - Picks the argmax and **returns the predicted action**.
+
+6. **UX**
+   - A single **Predict** button runs the pipeline and shows:
+     - The **top prediction** and (optionally) a small probability/score.
+     - The uploaded video for visual confirmation.
+
+### Run the app
+
+```bash
+cd "codes and output/code current"
 streamlit run app.py
 ```
 
+Open the local URL Streamlit prints (usually `http://localhost:8501`).
 
+---
 
-### C) Execute a specific script
+## Reproducing results
+
+- Ensure your dataset is in the described structure.
+- Run `training.py` to produce model weights.
+- Keep the **checkpoint filenames** as used in `app.py` (`fine_tuned_clip.pth`).
+
+If you change class names or counts, update them in `training.py` and (if listed) in the app’s label mappings.
+
+---
+
+## Files, clearly
+
+- **`code current/training.py`** — dataset loader, CLIP feature extraction, temporal pooling, linear head, training loop, validation, test evaluation, plots, and checkpoints.
+- **`code current/app.py`** — Streamlit UI, video upload/preview, preprocessing, model load, forward pass, and final prediction.
+- **`code current/logs.txt`** — real training/evaluation logs from previous runs.
+- **`code pre/*`** — an older iteration of the same idea; kept for reference.
+
+---
+
+## Why this approach
+
+- **CLIP** provides strong image representations out of the box.
+- **Temporal mean‑pooling** is simple and reliable for short actions.
+- **Fine‑tuning a linear head** on top is fast, data‑efficient, and easy to iterate.
+- Streamlit makes the demo effortless for **recruiters** and **stakeholders**.
+
+---
+
+## Commands recap
+
 ```bash
-python path/to/script.py --help
-# then run with appropriate CLI arguments
+# 1) Environment
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2) Train
+cd "codes and output/code current"
+python training.py
+
+# 3) Demo
+streamlit run app.py
 ```
 
-### D) Open the notebooks
-```bash
-jupyter notebook
-# or
-jupyter lab
-```
-Open any of the `.ipynb` files listed above and run cells top‑to‑bottom.
-
 ---
 
-## Configuration
+## Notes for reviewers (what to look for)
 
-the project expects secrets or runtime settings, it typically uses one of:
-- `.env` file in the repo root (for local dev)
-- `config.yaml`/`settings.toml` in a `config/` folder
-
-Common variables:
-- API keys (e.g., `OPENAI_API_KEY`, `GEMINI_API_KEY`)
-- Database URLs (e.g., `POSTGRES_URI`)
-- Model and data paths
-
-**Never commit real secrets.** Use `.env.example` to document variables.
+- Code clarity: clean separation between **data ingestion**, **feature extraction**, **training loop**, and **inference**.
+- Metrics: reported **test accuracy** and plots for loss/accuracy.
+- Reproducibility: a single entry script for training and a **one‑click** demo for inference.
 
 ---
-
-## Data & Artifacts
-
-- **Data inputs**: listed under “Data files” above. If large, they may be placeholders.
-- **Model artifacts**: any `.pkl`, `.pt`, `.h5`, etc. are included for reproducibility or references.
-
-If distributions are large or proprietary, replace them with sample subsets and document the original paths.
-
----
-
-
-
-## Logging & Monitoring
-
-Typical patterns:
-- Python `logging` module for structured logs
-- Progress bars via `tqdm` in longer jobs
-- Metrics persisted to CSV/JSON or MLflow (if configured)
-
----
-
-## CI/CD (Optional)
-
-If you add GitHub Actions:
-- Lint/type‑check: `ruff`, `flake8`, `black`, `mypy`
-- Test: `pytest`
-- Build: Docker or Python packaging if relevant
-
----
-
-## Project Walkthrough (How to read the code)
-
-1. **Start with entry points**: codes and output/code pre/app.py, codes and output/code current/app.py
-2. **Follow the data flow**: look for `data/`, `notebooks/`, `src/` modules.
-3. **Check model training or business logic** inside scripts/notebooks with “train”, “fit”, “predict”, “evaluate” in their names.
-4. **Review configs** to understand environment expectations.
-
-
----
-
-## Dependencies
-
-Dependencies were **auto‑detected** by scanning Python imports across `.py` and `.ipynb`. See `requirements.txt` for the list. If your platform needs specific versions, pin them there.
-
----
-
-
-
-
